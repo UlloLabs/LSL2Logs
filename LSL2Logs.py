@@ -15,7 +15,7 @@ if __name__ == "__main__":
     # we will consider that an empty pred is 
     if args.pred == "":
         print("Feching all streams")
-        cr = ContinuousResolver(forget_after = 1)
+        cr = ContinuousResolver(forget_after = 5)
     else:
         print("Using predicate: ", args.pred)
         cr = ContinuousResolver(pred=args.pred, forget_after = 5)
@@ -62,7 +62,6 @@ if __name__ == "__main__":
             
             # loop all current streams
             for s in streams.values():
-                print("Querrying", s['info'].name(),  s['info'].type(),  s['info'].hostname(), s['info'].uid())
                 inlet = s['inlet']
                 try:
                     sample, timestamp = inlet.pull_sample(timeout=0)
@@ -72,7 +71,6 @@ if __name__ == "__main__":
                     sample = None
                     pass
                     
-                print(sample)
                 # fetch all samples since last visit
                 while sample is not None:
                     data = {
@@ -86,7 +84,7 @@ if __name__ == "__main__":
                         'nominal_srate': s['info'].nominal_srate(),
                         'data': sample
                     }
-                    print(data)
+                    #print(data)
                     writer.writerow(data)
                     try:
                         sample, timestamp = inlet.pull_sample(timeout=0)
