@@ -21,7 +21,7 @@ if __name__ == "__main__":
         cr = ContinuousResolver(pred=args.pred, forget_after = 5)
 
     timestamp_start = datetime.now().isoformat()
-    filename_csv = './logs/data_flower_' + timestamp_start + '.csv'
+    filename_csv = './logs/data_' + timestamp_start + '.csv'
     fieldnames_csv =  ['date_local', 'timestamp_local', 'timestamp_sample', 'type', 'name', 'hostname', 'source_id', 'nominal_srate', 'data']    
     print("Writing data to:" + filename_csv)
     
