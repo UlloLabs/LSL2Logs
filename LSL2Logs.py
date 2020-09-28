@@ -10,12 +10,16 @@ from datetime import datetime
 class LSL2Logs:
     """
     Recording LSL streams data to CSV files. Each filename will be timestamped.
+
+    Recording could other occur at launch, until stopRecording() is called from an external thread. Or it could be handled manually with startRecording() / loop() / stopRecording(). Each new recording session will create a new output file. stopRecording() should be called in "manual" mode to make sure that the output file is closed correctly.
+    
+    For manual recording, it is advised to catch KeyboardInterrupt to properly call stopRecording() upon termination, using "signal" to also catch SIGINT and SIGTERM signals. See example in comment at the end of the file.
     """
     def __init__(self, pred = "", record_on_start = True, verbose=False):
         """
         pred: A predicate to use to filter streams. E.g. "type='EEG'", "type='EEG' and name='BioSemi'", "(type='EEG' and name='BioSemi') or type='HR'". Note that that predicat is case-sensitive. Default: empty, record all streams
         verbose: if True, will print on stdout debug info (e.g. echoes everything which is written, can be a lot)
-        record_on_start: start to record data upon init
+        record_on_start: start to record data upon init, a blocking call until stopRecording() is called
         """
         # we will consider that an empty pred is meant to record everything
         if pred == "":
@@ -30,8 +34,11 @@ class LSL2Logs:
 
         # information that will be written to file
         self._fieldnames_csv =  ['date_local', 'timestamp_local', 'timestamp_sample', 'type', 'name', 'hostname', 'source_id', 'nominal_srate', 'data']    
+        # CSV file where we will write info, initialized and used only in "manual" mode
+        self._csvfile = None
         # CSV writer, be initialized later on, used to factorize code between bloking and non-blocking calls
         self._writer = None
+
         # will hold info about known streams, because it is resource consuming to create inlets
         self._streams = {}
 
@@ -41,6 +48,7 @@ class LSL2Logs:
     def _initFile(self):
         """
         return filename for a new recording, create new output file if necessary. If already recording, returns an empty string
+        TODO: should raise something if could not init file?
         """
         if self._recording:
             return ""
@@ -118,9 +126,10 @@ class LSL2Logs:
 
     def record(self):
         """
-        blocking call, create new file and start to record data
+        blocking call, create new file and start to record data, looping at about 100hz
         """
         if self._recording:
+            print("Error: already recording.")
             return
        
         with open(self._initFile(), 'a') as csvfile:
@@ -131,6 +140,43 @@ class LSL2Logs:
                 self._writeCSV()
                 # might want to tune value depending on the tradeoff resources consumes / resolution of local timestamp
                 time.sleep(0.01)
+        self.stopRecording()
+
+    def startRecording(self):
+        """
+        manually start the recording session
+        WARNING: If a previous recording sessions occurred, some inlets were likely to be created, and at the beginning of subsequent recording sessions all values in the buffer will be fetched first.
+        TODO: new method to clean buffer?
+        """
+        if self._recording:
+            print("Error: already recording.")
+            return
+        # attempts to open file
+        try:
+            self._csvfile = open(self._initFile(), 'a')
+            self._writer = csv.DictWriter(self._csvfile, fieldnames=self._fieldnames_csv)
+            self._recording = True
+        except OSError:
+            print("Error: cannot open " + args.output_csv)
+   
+    def loop(self):
+        """
+        update stream list. If currently recording will also fetch last values from LSL, write to file. To be called periodically.
+        """
+        self._updateStreams()
+        if self._recording:
+            self._writeCSV()
+
+    def stopRecording(self):
+        """
+        Should be called when logger is used manually with startRecording() / loop() to properly close the file
+        """
+        self._recording = False
+        if self._csvfile is not None:
+            self._csvfile.close()
+            # reset internal states
+            self._csvfile = None
+            self._writer = None
         print("Recording stopped")
 
 if __name__ == "__main__":
@@ -140,3 +186,19 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     logger = LSL2Logs(args.pred, record_on_start=True, verbose=args.verbose)
+
+
+# Below, an example of how to properly use the class for manual recording.
+#
+#import signal
+#signal.signal(signal.SIGINT, signal.default_int_handler)
+#signal.signal(signal.SIGTERM, signal.default_int_handler)
+#logger = LSL2Logs()
+#try:
+#    logger.startReording()
+#    while True:
+#        logger.loop()
+#except KeyboardInterrupt:
+#    print("Catching Ctrl-C or SIGTERM, bye!")
+#finally:
+#    logger.stopRecording()
