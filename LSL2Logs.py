@@ -11,107 +11,132 @@ class LSL2Logs:
     """
     Recording LSL streams data to CSV files. Each filename will be timestamped.
     """
-    def __init__(self, pred = "", record_on_start = True):
+    def __init__(self, pred = "", record_on_start = True, verbose=False):
         """
         pred: A predicate to use to filter streams. E.g. "type='EEG'", "type='EEG' and name='BioSemi'", "(type='EEG' and name='BioSemi') or type='HR'". Note that that predicat is case-sensitive. Default: empty, record all streams
+        verbose: if True, will print on stdout debug info (e.g. echoes everything which is written, can be a lot)
         record_on_start: start to record data upon init
         """
         # we will consider that an empty pred is meant to record everything
         if pred == "":
             print("Feching all streams")
-            self.cr = ContinuousResolver(forget_after = 5)
+            self._cr = ContinuousResolver(forget_after = 5)
         else:
             print("Using predicate: ", pred)
-            self.cr = ContinuousResolver(pred=pred, forget_after = 5)
+            self._cr = ContinuousResolver(pred=pred, forget_after = 5)
         # flag to determine if we are already recording or not
-        self.recording = False
+        self._recording = False
+        self.verbose = verbose
+
+        # information that will be written to file
+        self._fieldnames_csv =  ['date_local', 'timestamp_local', 'timestamp_sample', 'type', 'name', 'hostname', 'source_id', 'nominal_srate', 'data']    
+        # CSV writer, be initialized later on, used to factorize code between bloking and non-blocking calls
+        self._writer = None
+        # will hold info about known streams, because it is resource consuming to create inlets
+        self._streams = {}
+
         if record_on_start:
             self.record()
+
+    def _initFile(self):
+        """
+        return filename for a new recording, create new output file if necessary. If already recording, returns an empty string
+        """
+        if self._recording:
+            return ""
+        timestamp_start = datetime.now().isoformat()
+        filename_csv = './logs/data_' + timestamp_start + '.csv'
+        print("Writing data to:" + filename_csv)
+        # create file if necessary  
+        if not os.path.exists(filename_csv) :
+            with open(filename_csv, 'w', newline='') as csvfile :
+                writer = csv.DictWriter(csvfile, fieldnames=self._fieldnames_csv)
+                writer.writeheader()
+        return filename_csv
+
+    def _updateStreams(self):
+        """
+        update internal stream list
+        FIXME: takes time, especially when there is a new inlet to create, should be ran in background
+        """
+        # fetch current streams
+        current_streams = {}
+        for i in self._cr.results():
+            current_streams[i.uid()] = i
+       
+        # prune streams that do not exist anymore
+        streams_outdated = set(self._streams) - set(current_streams)
+        for o in streams_outdated:
+            print("Lost stream:", self._streams[o]['info'].name(), self._streams[o]['info'].type(), self._streams[o]['info'].hostname())
+            # remove item, explicitely delete corresponding inlet
+            s = self._streams.pop(o)
+            del(s['inlet'])
+   
+        # add new streams
+        streams_new = set(current_streams) - set(self._streams)
+        for n in streams_new:
+            print("Got new stream:", current_streams[n].name(), current_streams[n].type(), current_streams[n].hostname())
+            # add stream to list, creating inlet
+            self._streams[current_streams[n].uid()] = {"info": current_streams[n], "inlet": StreamInlet(current_streams[n])}
+
+    def _writeCSV(self):
+        """
+        Fetch data from registered stream and write to file
+        Warning: handling of writing error / exception should be made by caller
+        """
+        if self._recording and self._writer is not None:
+            # loop all current streams
+            for s in self._streams.values():
+                inlet = s['inlet']
+                try:
+                    sample, timestamp = inlet.pull_sample(timeout=0)
+                except LostError:
+                    # stream broke, but wait for resolver to remove it from list
+                    print("stream broke")
+                    sample = None
+                
+                # fetch all samples since last visit
+                while sample is not None:
+                    data = {
+                        'date_local': datetime.now().isoformat(),
+                        'timestamp_local': local_clock(),
+                        'timestamp_sample': timestamp,
+                        'type': s['info'].type(),
+                        'name': s['info'].name(),
+                        'hostname': s['info'].hostname(),
+                        'source_id': s['info'].source_id(),
+                        'nominal_srate': s['info'].nominal_srate(),
+                        'data': sample
+                    }
+                    if self.verbose:
+                        print(data)
+                    self._writer.writerow(data)
+                    try:
+                        sample, timestamp = inlet.pull_sample(timeout=0)
+                    except LostError:
+                        sample = None
 
     def record(self):
         """
         blocking call, create new file and start to record data
         """
-        if self.recording:
+        if self._recording:
             return
- 
-        self.recording = True
-        timestamp_start = datetime.now().isoformat()
-        filename_csv = './logs/data_' + timestamp_start + '.csv'
-        fieldnames_csv =  ['date_local', 'timestamp_local', 'timestamp_sample', 'type', 'name', 'hostname', 'source_id', 'nominal_srate', 'data']    
-        print("Writing data to:" + filename_csv)
        
-        # create file if necessary  
-        if not os.path.exists(filename_csv) :
-            with open(filename_csv, 'w', newline='') as csvfile :
-                writer = csv.DictWriter(csvfile, fieldnames=fieldnames_csv)
-                writer.writeheader()
-               
-        # will hold info about known streams, because it is resource consuming to create inlets
-        streams = {}
-    
-        with open(filename_csv, 'a') as csvfile:
-            writer = csv.DictWriter(csvfile, fieldnames=fieldnames_csv)
-            while self.recording:
-            
-                # update streams
-                # FIXME: takes time, especially when there is a new inlet to create, should be ran in background
-                current_streams = {}
-                for i in self.cr.results():
-                    current_streams[i.uid()] = i
-               
-                # prune streams that do not exist anymore
-                streams_outdated = set(streams) - set(current_streams)
-                for o in streams_outdated:
-                    print("Lost stream:", streams[o]['info'].name(), streams[o]['info'].type(), streams[o]['info'].hostname())
-                    # remove item, explicitely delete corresponding inlet
-                    s = streams.pop(o)
-                    del(s['inlet'])
-           
-                # add new streams
-                streams_new = set(current_streams) - set(streams)
-                for n in streams_new:
-                    print("Got new stream:", current_streams[n].name(), current_streams[n].type(), current_streams[n].hostname())
-                    # add stream to list, creating inlet
-                    streams[current_streams[n].uid()] = {"info": current_streams[n], "inlet": StreamInlet(current_streams[n])}
-           
-                # loop all current streams
-                for s in streams.values():
-                    inlet = s['inlet']
-                    try:
-                        sample, timestamp = inlet.pull_sample(timeout=0)
-                    except LostError:
-                        # stream broke, but wait for resolver to remove it from list
-                        print("stream broke")
-                        sample = None
-                        pass
-                    
-                    # fetch all samples since last visit
-                    while sample is not None:
-                        data = {
-                            'date_local': datetime.now().isoformat(),
-                            'timestamp_local': local_clock(),
-                            'timestamp_sample': timestamp,
-                            'type': s['info'].type(),
-                            'name': s['info'].name(),
-                            'hostname': s['info'].hostname(),
-                            'source_id': s['info'].source_id(),
-                            'nominal_srate': s['info'].nominal_srate(),
-                            'data': sample
-                        }
-                        print(data)
-                        writer.writerow(data)
-                        try:
-                            sample, timestamp = inlet.pull_sample(timeout=0)
-                        except LostError:
-                            sample = None
-            
+        with open(self._initFile(), 'a') as csvfile:
+            self._writer = csv.DictWriter(csvfile, fieldnames=self._fieldnames_csv)
+            self._recording = True
+            while self._recording:
+                self._updateStreams()
+                self._writeCSV()
                 # might want to tune value depending on the tradeoff resources consumes / resolution of local timestamp
                 time.sleep(0.01)
+        print("Recording stopped")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Record data sent in LSL to CSV format.")
     parser.add_argument("--pred", type = str, default = "", help = """A predicate to use to filter streams. E.g. "type='EEG'", "type='EEG' and name='BioSemi'", "(type='EEG' and name='BioSemi') or type='HR'". Note that that predicat is case-sensitive. Default: empty, record all streams.""")
+    parser.add_argument("-v", "--verbose", action='store_true', help="Print more verbose information.")
     args = parser.parse_args()
 
-    logger = LSL2Logs(args.pred, record_on_start=True)
+    logger = LSL2Logs(args.pred, record_on_start=True, verbose=args.verbose)
