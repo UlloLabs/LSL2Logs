@@ -57,7 +57,7 @@ class LSL2Logs:
         print("Writing data to:" + filename_csv)
         # create file if necessary  
         if not os.path.exists(filename_csv) :
-            with open(filename_csv, 'w', newline='') as csvfile :
+            with open(filename_csv, 'w') as csvfile :
                 writer = csv.DictWriter(csvfile, fieldnames=self._fieldnames_csv)
                 writer.writeheader()
         return filename_csv
