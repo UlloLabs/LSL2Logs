@@ -120,7 +120,8 @@ class LSL2Logs:
         """
         Append stream_info metadata to correspoding CSV file
         """
-        if self._recording and self._filename_csv_meta:
+        # NB: this time do not check for self._recording flag because this method can well be called upon init of a new recording session
+        if self._filename_csv_meta:
            with open(self._filename_csv_meta, 'a') as csvfile_meta:
                writer = csv.DictWriter(csvfile_meta, fieldnames=self._fieldnames_csv_meta)
                metadata = {
