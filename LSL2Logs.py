@@ -15,7 +15,7 @@ class LSL2Logs:
     
     For manual recording, it is advised to catch KeyboardInterrupt to properly call stopRecording() upon termination, using "signal" to also catch SIGINT and SIGTERM signals. See example in comment at the end of the file.
     """
-    def __init__(self, pred = "", record_on_start = True, verbose=False, inlet_buflen=10, split_metadata=False):
+    def __init__(self, pred = "", record_on_start = True, verbose = False, inlet_buflen = 10, split_metadata = False, output_folder = "./logs"):
         """
         pred: A predicate to use to filter streams. E.g. "type='EEG'", "type='EEG' and name='BioSemi'", "(type='EEG' and name='BioSemi') or type='HR'". Note that that predicat is case-sensitive. Default: empty, record all streams
         verbose: if True, will print on stdout debug info (e.g. echoes everything which is written, can be a lot)
@@ -34,7 +34,8 @@ class LSL2Logs:
         self._recording = False
         self._inlet_buflen = inlet_buflen
         self._split = split_metadata
-        self.verbose = verbose
+        self._verbose = verbose
+        self._folder = output_folder
 
         # information that will be written to file
         if not self._split:
@@ -65,8 +66,8 @@ class LSL2Logs:
         if self._recording:
             return ""
         timestamp_start = datetime.now().isoformat()
-        filename_csv = './logs/data_' + timestamp_start + '.csv'
-        print("Writing data to:" + filename_csv)
+        filename_csv = self._folder + '/data_' + timestamp_start + '.csv'
+        print("Writing data to: " + filename_csv)
         # create file if necessary  
         if not os.path.exists(filename_csv) :
             with open(filename_csv, 'w') as csvfile :
@@ -75,7 +76,8 @@ class LSL2Logs:
 
         # create metadata file if option set, filling with current list of streams
         if self._split:        
-            self._filename_csv_meta = './logs/metadata_' + timestamp_start + '.csv'
+            self._filename_csv_meta = self._folder + '/metadata_' + timestamp_start + '.csv'
+            print("Writing metadata to: " + self._filename_csv_meta)
             if not os.path.exists(self._filename_csv_meta) :
                 with open(self._filename_csv_meta, 'w') as csvfile_meta:
                     writer = csv.DictWriter(csvfile_meta, fieldnames=self._fieldnames_csv_meta)
@@ -131,7 +133,7 @@ class LSL2Logs:
                    'source_id': stream_info.source_id(),
                    'nominal_srate': stream_info.nominal_srate(),
                }
-               if self.verbose:
+               if self._verbose:
                    print(metadata)
                writer.writerow(metadata)
 
@@ -172,7 +174,7 @@ class LSL2Logs:
                             'timestamp_sample': timestamp,
                             'data': sample
                         }
-                    if self.verbose:
+                    if self._verbose:
                         print(data)
                     self._writer.writerow(data)
                     try:
@@ -215,7 +217,7 @@ class LSL2Logs:
             self._writer = csv.DictWriter(self._csvfile, fieldnames=self._fieldnames_csv)
             self._recording = True
         except OSError:
-            print("Error: cannot open " + args.output_csv)
+            print("Error: cannot open output file. Does output folder exist?")
    
     def loop(self):
         """
@@ -241,9 +243,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Record data sent in LSL to CSV format.")
     parser.add_argument("--pred", type = str, default = "", help = """A predicate to use to filter streams. E.g. "type='EEG'", "type='EEG' and name='BioSemi'", "(type='EEG' and name='BioSemi') or type='HR'". Note that that predicat is case-sensitive. Default: empty, record all streams.""")
     parser.add_argument("-v", "--verbose", action='store_true', help="Print more verbose information.")
+    parser.add_argument("--buflen", type = int, default = 10, help = "How many data is kept in LSL inlets' buffer, in seconds (x100 is sampling rate is 0). Each new recording session will first fetch data from buffer. Default: 10.")
+    parser.add_argument("-s", "--split_metadata", action='store_true', help="If option set, will create two CSV file for each recording, one with only info about streams, second with the actual data. CSV files will take less space than without split, but more cumbersome to process afterward.")
+    parser.add_argument("-of", "--output_folder", type = str, default = "./logs", help = "In which folder to store CSV files. Folder should exist. Default: './logs' in working directory.")
     args = parser.parse_args()
 
-    logger = LSL2Logs(args.pred, record_on_start=True, verbose=args.verbose)
+    logger = LSL2Logs(pred=args.pred, record_on_start=True, verbose=args.verbose, split_metadata=args.split_metadata, output_folder=args.output_folder)
 
 # Below, an example of how to properly use the class for manual recording.
 #
