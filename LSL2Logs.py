@@ -15,12 +15,13 @@ class LSL2Logs:
     
     For manual recording, it is advised to catch KeyboardInterrupt to properly call stopRecording() upon termination, using "signal" to also catch SIGINT and SIGTERM signals. See example in comment at the end of the file.
     """
-    def __init__(self, pred = "", record_on_start = True, verbose=False, inlet_buflen=10):
+    def __init__(self, pred = "", record_on_start = True, verbose=False, inlet_buflen=10, split_metadata=False):
         """
         pred: A predicate to use to filter streams. E.g. "type='EEG'", "type='EEG' and name='BioSemi'", "(type='EEG' and name='BioSemi') or type='HR'". Note that that predicat is case-sensitive. Default: empty, record all streams
         verbose: if True, will print on stdout debug info (e.g. echoes everything which is written, can be a lot)
         record_on_start: start to record data upon init, a blocking call until stopRecording() is called
         inlet_buflen: how many data should be buffered in the background for each LSL inlet until samples are pulled. In seconds (or x100 sample if not sampling rate set, see LSL doc). Each new recording session will first fetch data from buffer.
+        split_metadata: if true, will create two CSV file for each recording, one with only info about streams, second with the actual data. CSV files will take less space than without split, but more cumbersome to process afterward.
         """
         # we will consider that an empty pred is meant to record everything
         if pred == "":
@@ -32,14 +33,22 @@ class LSL2Logs:
         # flag to determine if we are already recording or not
         self._recording = False
         self._inlet_buflen = inlet_buflen
+        self._split = split_metadata
         self.verbose = verbose
 
         # information that will be written to file
-        self._fieldnames_csv =  ['date_local', 'timestamp_local', 'timestamp_sample', 'type', 'name', 'hostname', 'source_id', 'nominal_srate', 'data']    
+        if not self._split:
+            self._fieldnames_csv =  ['date_local', 'timestamp_local', 'timestamp_sample', 'type', 'name', 'hostname', 'source_id', 'nominal_srate', 'data']    
+        else:
+            self._fieldnames_csv =  ['uid', 'timestamp_local', 'timestamp_sample', 'data']
         # CSV file where we will write info, initialized and used only in "manual" mode
         self._csvfile = None
         # CSV writer, be initialized later on, used to factorize code between bloking and non-blocking calls
         self._writer = None
+        # fields used by metadata, if option set
+        self._fieldnames_csv_meta =  ['uid', 'date_local', 'timestamp_local', 'type', 'name', 'hostname', 'source_id', 'nominal_srate'] 
+        # for the metadat, we save the filename, as opposed to data we will open it for each update
+        self._filename_csv_meta = ""
 
         # will hold info about known streams, because it is resource consuming to create inlets
         self._streams = {}
@@ -49,7 +58,8 @@ class LSL2Logs:
 
     def _initFile(self):
         """
-        return filename for a new recording, create new output file if necessary. If already recording, returns an empty string
+        return data filename for a new recording, update metadata filename if option set, create new output files if necessary. If already recording, returns an empty string. 
+        Note that metadata will be initialized with current list of stream, hence _updateStreams should be called right before
         TODO: should raise something if could not init file?
         """
         if self._recording:
@@ -62,11 +72,22 @@ class LSL2Logs:
             with open(filename_csv, 'w') as csvfile :
                 writer = csv.DictWriter(csvfile, fieldnames=self._fieldnames_csv)
                 writer.writeheader()
+
+        # create metadata file if option set, filling with current list of streams
+        if self._split:        
+            self._filename_csv_meta = './logs/metadata_' + timestamp_start + '.csv'
+            if not os.path.exists(self._filename_csv_meta) :
+                with open(self._filename_csv_meta, 'w') as csvfile_meta:
+                    writer = csv.DictWriter(csvfile_meta, fieldnames=self._fieldnames_csv_meta)
+                    writer.writeheader()
+            for s in self._streams.values():
+                self._writeCSVMeta(s['info'])
+            
         return filename_csv
 
     def _updateStreams(self):
         """
-        update internal stream list
+        update internal stream list, write metadata info if split option is set
         FIXME: takes time, especially when there is a new inlet to create, should be ran in background
         """
         # fetch current streams
@@ -88,6 +109,31 @@ class LSL2Logs:
             print("Got new stream:", current_streams[n].name(), current_streams[n].type(), current_streams[n].hostname())
             # add stream to list, creating inlet
             self._streams[current_streams[n].uid()] = {"info": current_streams[n], "inlet": StreamInlet(current_streams[n], max_buflen=self._inlet_buflen)}
+            # write metadata if necessary
+            # TODO: optimize writing, e.g. open once for all new streams
+            if self._split:
+                self._writeCSVMeta(current_streams[n])
+
+    def _writeCSVMeta(self, stream_info):
+        """
+        Append stream_info metadata to correspoding CSV file
+        """
+        if self._recording and self._filename_csv_meta:
+           with open(self._filename_csv_meta, 'a') as csvfile_meta:
+               writer = csv.DictWriter(csvfile_meta, fieldnames=self._fieldnames_csv_meta)
+               metadata = {
+                   'uid': stream_info.uid(),
+                   'date_local': datetime.now().isoformat(),
+                   'timestamp_local': local_clock(),
+                   'type': stream_info.type(),
+                   'name': stream_info.name(),
+                   'hostname': stream_info.hostname(),
+                   'source_id': stream_info.source_id(),
+                   'nominal_srate': stream_info.nominal_srate(),
+               }
+               if self.verbose:
+                   print(metadata)
+               writer.writerow(metadata)
 
     def _writeCSV(self):
         """
@@ -107,17 +153,25 @@ class LSL2Logs:
                 
                 # fetch all samples since last visit
                 while sample is not None:
-                    data = {
-                        'date_local': datetime.now().isoformat(),
-                        'timestamp_local': local_clock(),
-                        'timestamp_sample': timestamp,
-                        'type': s['info'].type(),
-                        'name': s['info'].name(),
-                        'hostname': s['info'].hostname(),
-                        'source_id': s['info'].source_id(),
-                        'nominal_srate': s['info'].nominal_srate(),
-                        'data': sample
-                    }
+                    if not self._split:
+                        data = {
+                            'date_local': datetime.now().isoformat(),
+                            'timestamp_local': local_clock(),
+                            'timestamp_sample': timestamp,
+                            'type': s['info'].type(),
+                            'name': s['info'].name(),
+                            'hostname': s['info'].hostname(),
+                            'source_id': s['info'].source_id(),
+                            'nominal_srate': s['info'].nominal_srate(),
+                            'data': sample
+                        }
+                    else:
+                        data = {
+                            'uid': s['info'].uid(),
+                            'timestamp_local': local_clock(),
+                            'timestamp_sample': timestamp,
+                            'data': sample
+                        }
                     if self.verbose:
                         print(data)
                     self._writer.writerow(data)
@@ -133,7 +187,8 @@ class LSL2Logs:
         if self._recording:
             print("Error: already recording.")
             return
-       
+
+        self._updateStreams()
         with open(self._initFile(), 'a') as csvfile:
             self._writer = csv.DictWriter(csvfile, fieldnames=self._fieldnames_csv)
             self._recording = True
@@ -153,6 +208,7 @@ class LSL2Logs:
         if self._recording:
             print("Error: already recording.")
             return
+        self._updateStreams()
         # attempts to open file
         try:
             self._csvfile = open(self._initFile(), 'a')
