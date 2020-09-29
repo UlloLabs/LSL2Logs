@@ -15,11 +15,12 @@ class LSL2Logs:
     
     For manual recording, it is advised to catch KeyboardInterrupt to properly call stopRecording() upon termination, using "signal" to also catch SIGINT and SIGTERM signals. See example in comment at the end of the file.
     """
-    def __init__(self, pred = "", record_on_start = True, verbose=False):
+    def __init__(self, pred = "", record_on_start = True, verbose=False, inlet_buflen=10):
         """
         pred: A predicate to use to filter streams. E.g. "type='EEG'", "type='EEG' and name='BioSemi'", "(type='EEG' and name='BioSemi') or type='HR'". Note that that predicat is case-sensitive. Default: empty, record all streams
         verbose: if True, will print on stdout debug info (e.g. echoes everything which is written, can be a lot)
         record_on_start: start to record data upon init, a blocking call until stopRecording() is called
+        inlet_buflen: how many data should be buffered in the background for each LSL inlet until samples are pulled. In seconds (or x100 sample if not sampling rate set, see LSL doc). Each new recording session will first fetch data from buffer.
         """
         # we will consider that an empty pred is meant to record everything
         if pred == "":
@@ -30,6 +31,7 @@ class LSL2Logs:
             self._cr = ContinuousResolver(pred=pred, forget_after = 5)
         # flag to determine if we are already recording or not
         self._recording = False
+        self._inlet_buflen = inlet_buflen
         self.verbose = verbose
 
         # information that will be written to file
@@ -85,7 +87,7 @@ class LSL2Logs:
         for n in streams_new:
             print("Got new stream:", current_streams[n].name(), current_streams[n].type(), current_streams[n].hostname())
             # add stream to list, creating inlet
-            self._streams[current_streams[n].uid()] = {"info": current_streams[n], "inlet": StreamInlet(current_streams[n])}
+            self._streams[current_streams[n].uid()] = {"info": current_streams[n], "inlet": StreamInlet(current_streams[n], max_buflen=self._inlet_buflen)}
 
     def _writeCSV(self):
         """
@@ -187,7 +189,6 @@ if __name__ == "__main__":
 
     logger = LSL2Logs(args.pred, record_on_start=True, verbose=args.verbose)
 
-
 # Below, an example of how to properly use the class for manual recording.
 #
 #import signal
@@ -198,6 +199,7 @@ if __name__ == "__main__":
 #    logger.startReording()
 #    while True:
 #        logger.loop()
+#        time.sleep(0.01)
 #except KeyboardInterrupt:
 #    print("Catching Ctrl-C or SIGTERM, bye!")
 #finally:
